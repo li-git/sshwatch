@@ -1,0 +1,116 @@
+
+<!doctype html>
+<html>
+<head>
+	<title>SBC</title>
+	<style>
+	canvas {
+		-moz-user-select: none;
+		-webkit-user-select: none;
+		-ms-user-select: none;
+	}
+	</style>
+	<input id="starttime" type="datetime-local"></input>
+	<input id="endtime" type="datetime-local"></input>
+	<button id="search">refresh</button>
+	<button id="selectall">selectall</button>
+</head>
+<body>
+	<div style="width:80%;">
+		<canvas id="canvas"></canvas>
+	</div>
+	<script src="/js/chart.js"></script>
+	<script src="/js/utils.js"></script>
+	<script src="http://libs.baidu.com/jquery/2.1.4/jquery.min.js"></script>
+	<script>
+		var lineChartData = {
+			labels: [],
+			datasets: []
+		};
+		var chartobj = {}
+		var draw = function() {
+			var ctx = document.getElementById('canvas').getContext('2d');
+			var showInfo = {}
+			var postdata = {}
+			postdata.startTime = $("#starttime").val()
+			postdata.endTime = $("#endtime").val()
+			console.log(postdata)
+			$.ajax({
+				url: '/getinfo',
+				type: 'POST',
+				data: JSON.stringify(postdata),
+				success: function(response) {
+					var rep = $.parseJSON(response)
+					if(rep.result=="success"){
+						var cpus = Object.keys(rep.data[1]).length - 1
+						console.log(cpus)
+						lineChartData.datasets.length = 0
+						for(var i=0;i<cpus;++i){
+							var view = {}
+							view.label= 'CPU' + (i).toString(),
+							view.borderColor= window.chartColors.yellow,
+							view.backgroundColor= window.chartColors.blue,
+							view.fill= false,
+							view.data= [],
+							view.yAxisID= 'y-axis-' + (i).toString(),
+							lineChartData.datasets.push(view)
+						}
+						lineChartData.labels.length = 0
+						for(var info of rep.data){
+							lineChartData.labels.push(info.time)
+							console.log(info)
+							for(var i=0;i<cpus;++i)
+							{
+								lineChartData.datasets[i].data.push(info["cpu"+(i).toString()])
+							}
+						}
+						var yaxes = new Array()
+						for(var i=0;i<cpus;++i)
+						{
+							var info = {}
+							info.type = 'linear'
+							info.display = false
+							info.position = 'right'
+							info.id = 'y-axis-'+ (i).toString()
+							info.gridLines = {}
+							info.gridLines.drawOnChartArea = false
+							//info.ticks = {}
+							//info.ticks.display = false
+							yaxes.push(info)
+						}
+						chartobj = Chart.Line(ctx, {
+						data: lineChartData,
+						options: {
+								responsive: true,
+								hoverMode: 'index',
+								stacked: false,
+								title: {
+									display: true,
+									text: 'sbc info'
+								},
+								scales: {
+									yAxes: yaxes,
+								}
+							}
+						});
+					}else{
+						alert("apply failed!")
+					}
+				}
+			});
+		};
+		window.onload = function(){
+			draw()
+		}
+		$("#search").on('click', function(){
+			draw()
+		});
+		$("#selectall").on('click', function(){
+			lineChartData.datasets.forEach(function(ds) {
+				ds.hidden = !ds.hidden;
+			});
+			chartobj.update();
+		});
+	</script>
+</body>
+</html>
