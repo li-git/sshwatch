@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,23 +25,125 @@ type sliceData struct {
 	sshData map[string]string
 }
 
+type processSlice struct {
+	Stamps  int64
+	cpuInfo []int //  cpu
+	memInfo []int //  mem
+}
+
 var (
-	httpserver  *string
-	infoContain []sliceData
+	httpserver     *string
+	sshServer      *string
+	sshPort        *int64
+	sshUsername    *string
+	sshPassword    *string
+	cpuCores       int
+	infoContain    []sliceData //for mpstate info
+	processContain []processSlice
+	processPid     map[string]string //map processName,pid
 )
 
 func init() {
 	httpserver = flag.String("httpserver", "0.0.0.0:888", "httpserver addr")
+	sshServer = flag.String("sshServer", "10.100.123.246", "sshServer")
+	sshPort = flag.Int64("sshPort", 2024, "ssh port")
+	sshUsername = flag.String("sshUsername", "linuxadmin", "ssh username")
+	sshPassword = flag.String("sshPassword", "sonus", "ssh password")
+	processPid = make(map[string]string)
 }
 
 func main() {
 	flag.Parse()
 	cliConf := new(ClientConfig)
-	cliConf.createClient("10.100.123.246", 2024, "linuxadmin", "sonus")
+	cliConf.createClient(*sshServer, *sshPort, *sshUsername, *sshPassword)
+	appInfo := RunShell(cliConf.Client, "sudo /etc/init.d/sbx status")
+	scanner := bufio.NewScanner(strings.NewReader(appInfo))
+	for scanner.Scan() {
+		msg := scanner.Text()
+		if strings.Contains(msg, "CE_2N_Comp_") {
+			reg := regexp.MustCompile(`pid (\d+)`)
+			pid := reg.FindStringSubmatch(msg)[1]
+			reg = regexp.MustCompile(`(CE_2N_Comp_.*)\(`)
+			processName := reg.FindStringSubmatch(msg)[1]
+			log.Println("===> process ", processName, "  PID ", pid)
+			processPid[processName] = pid
+		}
+	}
+	{
+		cpuinfo := RunShell(cliConf.Client, "grep -c processor /proc/cpuinfo")
+		reg := regexp.MustCompile(`(\d+)`)
+		cpuCores, _ = strconv.Atoi(reg.FindStringSubmatch(cpuinfo)[1])
+		log.Println("cpucores ", cpuCores)
+	}
+	go cpuProcess(cliConf.Client)
 	go sshSession(cliConf.Client)
 	http_server_run(*httpserver)
 }
+func cpuProcess(client *ssh.Client) {
+	totalCmd := `awk '{if ($1 == "cpu") {sum = $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9 + $10 + $11;print sum}}' /proc/stat`
+	type pidStruct struct {
+		sample1 int
+		total1  int
+		sample2 int
+		total2  int
+		mem     int
+		used    int
+	}
+	var pidSlice = make(map[string]pidStruct)
+	for {
+		for process, pid := range processPid {
+			processCmd := `awk '{sum=$14 + $15;print sum}' /proc/` + pid + `/stat`
+			processTime := getshellNumber(client, processCmd)
+			totalTime := getshellNumber(client, totalCmd)
+			pidStruct_ := pidStruct{sample1: processTime, total1: totalTime}
+			pidSlice[process] = pidStruct_
+		}
 
+		time.Sleep(time.Second * 3)
+
+		pSlice := processSlice{}
+		pSlice.Stamps = time.Now().Unix()
+
+		for process, pid := range processPid {
+			memCmd := `cat /proc/` + pid + `/status|grep -e VmRSS|awk '{print $2}'`
+			processCmd := `awk '{sum=$14 + $15;print sum}' /proc/` + pid + `/stat`
+			processTime := getshellNumber(client, processCmd)
+			totalTime := getshellNumber(client, totalCmd)
+			memUsed := getshellNumber(client, memCmd) / 1024
+
+			pidStruct_ := pidSlice[process]
+			pidStruct_.sample2 = processTime
+			pidStruct_.total2 = totalTime
+			pidStruct_.mem = memUsed
+			pidStruct_.used = ((pidStruct_.sample2 - pidStruct_.sample1) * cpuCores * 100) / (pidStruct_.total2 - pidStruct_.total1)
+			pidSlice[process] = pidStruct_
+
+			pSlice.cpuInfo = append(pSlice.cpuInfo, pidStruct_.used)
+			pSlice.memInfo = append(pSlice.memInfo, pidStruct_.mem)
+		}
+		//save pSlice info to contain
+		processContain = append(processContain, pSlice)
+		//log.Println(processContain)
+	}
+
+}
+func getNumber(str string) int {
+	reg := regexp.MustCompile(`(\d+)`)
+	ret, _ := strconv.Atoi(reg.FindStringSubmatch(str)[1])
+	return ret
+}
+func getshellNumber(client *ssh.Client, shell string) int {
+	session, err := client.NewSession()
+	if err != nil {
+		log.Fatalln(err)
+	}
+	output, err := session.CombinedOutput(shell)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	session.Close()
+	return getNumber(string(output))
+}
 func transTime(format string) int64 {
 	format = strings.Replace(format, "T", " ", 1)
 	format = format + ":00"
@@ -130,6 +233,75 @@ func http_server_run(httpserver string) {
 			fmt.Fprintf(w, string(datasStr))
 		}
 	})
+	http.HandleFunc("/getprocessinfo", func(w http.ResponseWriter, r *http.Request) {
+		var responseInfo map[string]interface{}
+		responseInfo = make(map[string]interface{})
+		var datas []processSlice
+
+		s, _ := ioutil.ReadAll(r.Body)
+		var req map[string]interface{}
+		err := json.Unmarshal(s, &req)
+		if err == nil && req["startTime"] != nil && req["endTime"] != nil && len(req["startTime"].(string)) > 0 && len(req["endTime"].(string)) > 0 {
+			startStamp := transTime(req["startTime"].(string))
+			endStamp := transTime(req["endTime"].(string))
+
+			interval := processContain[1].Stamps - processContain[0].Stamps
+			startPos := (startStamp - processContain[0].Stamps) / interval
+			endPos := (endStamp - processContain[0].Stamps) / interval
+			if startPos < 0 {
+				startPos = 0
+			}
+			if endPos > int64(len(processContain)) {
+				endPos = int64(len(processContain))
+			}
+			if int(startPos) > len(processContain)-1 {
+				startPos = int64(len(processContain)) - 1
+			}
+
+			if int(endPos) > len(processContain)-1 {
+				endPos = int64(len(processContain)) - 1
+			}
+
+			for index := startPos; index > 0; index-- {
+				startPos = index
+				if processContain[index].Stamps < startStamp {
+					startStamp = index
+					break
+				}
+			}
+			for index := endPos; index < int64(len(processContain)); index++ {
+				endPos = index
+				if processContain[index].Stamps > endStamp {
+					endPos = index
+					break
+				}
+			}
+			log.Println("start end time ", req["startTime"].(string), startStamp, req["endTime"].(string), endStamp)
+			for _, info := range processContain[startPos:endPos] {
+				if startStamp < info.Stamps && info.Stamps < endStamp {
+					datas = append(datas, info)
+				}
+			}
+		} else {
+			var start_pos int
+			lens := len(processContain)
+			if lens > 100 {
+				start_pos = lens - 100
+			} else {
+				start_pos = 0
+			}
+			datas = processContain[start_pos : lens-1]
+		}
+		responseInfo["data"] = datas
+		responseInfo["result"] = "success"
+		datasStr, err := json.Marshal(responseInfo)
+		if err != nil {
+			fmt.Fprintf(w, "{\"result\":\"failed\"}")
+		} else {
+			log.Println("===>", string(datasStr))
+			fmt.Fprintf(w, string(datasStr))
+		}
+	})
 	http.ListenAndServe(httpserver, nil)
 }
 
@@ -182,7 +354,24 @@ func sshSession(client *ssh.Client) {
 	}
 	go praseStdout(cmdReader)
 
-	session.Run("mpstat -P ALL 3")
+	session.Run("mpstat -P ALL 5")
+	//session.Run("tail -f /var/log/sonus/sbxPerf/mpstat.log")
+}
+func RunShell(client *ssh.Client, shell string) string {
+	var (
+		session *ssh.Session
+		err     error
+		output  []byte
+	)
+	if session, err = client.NewSession(); err != nil {
+		log.Fatalln(err)
+	}
+
+	if output, err = session.CombinedOutput(shell); err != nil {
+		log.Fatalln(err)
+	}
+	session.Close()
+	return string(output)
 }
 func praseStdout(fd io.Reader) {
 	var infoTmp sliceData
@@ -200,15 +389,16 @@ func praseStdout(fd io.Reader) {
 			_, ok := cpuinfo["cpu1"]
 			if ok {
 				infoContain = append(infoContain, infoTmp)
+				if len(infoContain) > 3600*12/5 {
+					infoContain = infoContain[len(infoContain)-3600*12+1:]
+				}
 			}
 			cpuCore = 0
 			cpuinfo = make(map[string]string)
 		} else {
 			if !strings.Contains(msg, "Linux") && !strings.Contains(msg, "usr") {
 				splitStr := strings.Split(msg, " ")
-				//log.Println(splitStr)
 				if len(splitStr) > 1 {
-					//log.Println(">>>>>>>>>>>>>>>>>>>>>", cpuCore, splitStr[len(splitStr)-1])
 					cpuinfo["cpu"+strconv.Itoa(cpuCore)] = splitStr[len(splitStr)-1]
 					cpuCore = cpuCore + 1
 				}

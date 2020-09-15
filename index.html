@@ -61,7 +61,8 @@
 							console.log(info)
 							for(var i=0;i<cpus;++i)
 							{
-								lineChartData.datasets[i].data.push(info["cpu"+(i).toString()])
+								var cpuload = 100 - parseFloat(info["cpu"+(i).toString()])
+								lineChartData.datasets[i].data.push(cpuload)
 							}
 						}
 						var yaxes = new Array()
