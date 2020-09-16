@@ -52,18 +52,17 @@
 			postdata.endTime = $("#endtime").val()
 			console.log(postdata)
 			$.ajax({
-				url: '/getinfo',
+				url: '/getprocessinfo',
 				type: 'POST',
 				data: JSON.stringify(postdata),
 				success: function(response) {
 					var rep = $.parseJSON(response)
 					if(rep.result=="success"){
-						var cpus = Object.keys(rep.data[1]).length - 1
-						console.log(cpus)
+						var processNum = Object.keys(rep.labels).length
 						lineChartData.datasets.length = 0
-						for(var i=0;i<cpus;++i){
+						for(var i=0;i<processNum;++i){
 							var view = {}
-							view.label= 'CPU' + (i).toString(),
+							view.label= rep.labels[i],
 							view.borderColor= window.chartColors.yellow,
 							view.backgroundColor= window.chartColors.blue,
 							view.fill= false,
@@ -73,16 +72,15 @@
 						}
 						lineChartData.labels.length = 0
 						for(var info of rep.data){
-							lineChartData.labels.push(info.time)
-							console.log(info)
-							for(var i=0;i<cpus;++i)
+							lineChartData.labels.push(info.Time)
+							for(var i=0;i<processNum;++i)
 							{
-								var cpuload = 100 - parseFloat(info["cpu"+(i).toString()])
+								var cpuload = parseFloat(info.CpuInfo[i])
 								lineChartData.datasets[i].data.push(cpuload)
 							}
 						}
 						var yaxes = new Array()
-						for(var i=0;i<cpus;++i)
+						for(var i=0;i<processNum;++i)
 						{
 							var info = {}
 							info.type = 'linear'
@@ -91,8 +89,6 @@
 							info.id = 'y-axis-'+ (i).toString()
 							info.gridLines = {}
 							info.gridLines.drawOnChartArea = false
-							//info.ticks = {}
-							//info.ticks.display = false
 							yaxes.push(info)
 						}
 						chartobj = Chart.Line(ctx, {

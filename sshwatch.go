@@ -27,8 +27,13 @@ type sliceData struct {
 
 type processSlice struct {
 	Stamps  int64
-	cpuInfo []int //  cpu
-	memInfo []int //  mem
+	Time    string
+	CpuInfo []int //  cpu
+	MemInfo []int //  mem
+}
+type processpid struct {
+	Name string
+	Pid  string
 }
 
 var (
@@ -40,7 +45,7 @@ var (
 	cpuCores       int
 	infoContain    []sliceData //for mpstate info
 	processContain []processSlice
-	processPid     map[string]string //map processName,pid
+	processPid     []processpid //map processName,pid
 )
 
 func init() {
@@ -49,7 +54,6 @@ func init() {
 	sshPort = flag.Int64("sshPort", 2024, "ssh port")
 	sshUsername = flag.String("sshUsername", "linuxadmin", "ssh username")
 	sshPassword = flag.String("sshPassword", "sonus", "ssh password")
-	processPid = make(map[string]string)
 }
 
 func main() {
@@ -66,7 +70,8 @@ func main() {
 			reg = regexp.MustCompile(`(CE_2N_Comp_.*)\(`)
 			processName := reg.FindStringSubmatch(msg)[1]
 			log.Println("===> process ", processName, "  PID ", pid)
-			processPid[processName] = pid
+			//processPid[processName] = pid
+			processPid = append(processPid, processpid{Name: processName, Pid: pid})
 		}
 	}
 	{
@@ -91,39 +96,45 @@ func cpuProcess(client *ssh.Client) {
 	}
 	var pidSlice = make(map[string]pidStruct)
 	for {
-		for process, pid := range processPid {
-			processCmd := `awk '{sum=$14 + $15;print sum}' /proc/` + pid + `/stat`
+		for _, pinfo := range processPid {
+			processCmd := `awk '{sum=$14 + $15;print sum}' /proc/` + pinfo.Pid + `/stat`
 			processTime := getshellNumber(client, processCmd)
 			totalTime := getshellNumber(client, totalCmd)
 			pidStruct_ := pidStruct{sample1: processTime, total1: totalTime}
-			pidSlice[process] = pidStruct_
+			pidSlice[pinfo.Name] = pidStruct_
 		}
 
 		time.Sleep(time.Second * 3)
 
 		pSlice := processSlice{}
 		pSlice.Stamps = time.Now().Unix()
+		pSlice.Time = time.Now().Format("2006-01-02 15:04:05")
 
-		for process, pid := range processPid {
-			memCmd := `cat /proc/` + pid + `/status|grep -e VmRSS|awk '{print $2}'`
-			processCmd := `awk '{sum=$14 + $15;print sum}' /proc/` + pid + `/stat`
+		for _, pinfo := range processPid {
+			memCmd := `cat /proc/` + pinfo.Pid + `/status|grep -e VmRSS|awk '{print $2}'`
+			processCmd := `awk '{sum=$14 + $15;print sum}' /proc/` + pinfo.Pid + `/stat`
 			processTime := getshellNumber(client, processCmd)
 			totalTime := getshellNumber(client, totalCmd)
 			memUsed := getshellNumber(client, memCmd) / 1024
 
-			pidStruct_ := pidSlice[process]
+			pidStruct_ := pidSlice[pinfo.Name]
 			pidStruct_.sample2 = processTime
 			pidStruct_.total2 = totalTime
 			pidStruct_.mem = memUsed
 			pidStruct_.used = ((pidStruct_.sample2 - pidStruct_.sample1) * cpuCores * 100) / (pidStruct_.total2 - pidStruct_.total1)
-			pidSlice[process] = pidStruct_
+			pidSlice[pinfo.Name] = pidStruct_
 
-			pSlice.cpuInfo = append(pSlice.cpuInfo, pidStruct_.used)
-			pSlice.memInfo = append(pSlice.memInfo, pidStruct_.mem)
+			pSlice.CpuInfo = append(pSlice.CpuInfo, pidStruct_.used)
+			pSlice.MemInfo = append(pSlice.MemInfo, pidStruct_.mem)
 		}
-		//save pSlice info to contain
 		processContain = append(processContain, pSlice)
-		//log.Println(processContain)
+		for index, tmpSlice := range processContain {
+			if tmpSlice.Stamps < (time.Now().Unix() - 3600*12) {
+				processContain = processContain[index:]
+			} else {
+				break
+			}
+		}
 	}
 
 }
@@ -277,11 +288,7 @@ func http_server_run(httpserver string) {
 				}
 			}
 			log.Println("start end time ", req["startTime"].(string), startStamp, req["endTime"].(string), endStamp)
-			for _, info := range processContain[startPos:endPos] {
-				if startStamp < info.Stamps && info.Stamps < endStamp {
-					datas = append(datas, info)
-				}
-			}
+			datas = processContain[startPos:endPos]
 		} else {
 			var start_pos int
 			lens := len(processContain)
@@ -292,7 +299,12 @@ func http_server_run(httpserver string) {
 			}
 			datas = processContain[start_pos : lens-1]
 		}
+		var labels []string
+		for _, pinfo := range processPid {
+			labels = append(labels, pinfo.Name)
+		}
 		responseInfo["data"] = datas
+		responseInfo["labels"] = labels
 		responseInfo["result"] = "success"
 		datasStr, err := json.Marshal(responseInfo)
 		if err != nil {
@@ -389,8 +401,12 @@ func praseStdout(fd io.Reader) {
 			_, ok := cpuinfo["cpu1"]
 			if ok {
 				infoContain = append(infoContain, infoTmp)
-				if len(infoContain) > 3600*12/5 {
-					infoContain = infoContain[len(infoContain)-3600*12+1:]
+				for index, tmpSlice := range infoContain {
+					if tmpSlice.Stamps < (time.Now().Unix() - 3600*12) {
+						infoContain = infoContain[index:]
+					} else {
+						break
+					}
 				}
 			}
 			cpuCore = 0
