@@ -46,6 +46,7 @@ var (
 	infoContain    []sliceData //for mpstate info
 	processContain []processSlice
 	processPid     []processpid //map processName,pid
+	savedRange     int64
 )
 
 func init() {
@@ -54,6 +55,7 @@ func init() {
 	sshPort = flag.Int64("sshPort", 2024, "ssh port")
 	sshUsername = flag.String("sshUsername", "linuxadmin", "ssh username")
 	sshPassword = flag.String("sshPassword", "sonus", "ssh password")
+	savedRange = 24 * 3600
 }
 
 func main() {
@@ -129,7 +131,7 @@ func cpuProcess(client *ssh.Client) {
 		}
 		processContain = append(processContain, pSlice)
 		for index, tmpSlice := range processContain {
-			if tmpSlice.Stamps < (time.Now().Unix() - 3600*12) {
+			if tmpSlice.Stamps < (time.Now().Unix() - savedRange) {
 				processContain = processContain[index:]
 			} else {
 				break
@@ -184,44 +186,12 @@ func http_server_run(httpserver string) {
 		if err == nil && req["startTime"] != nil && req["endTime"] != nil && len(req["startTime"].(string)) > 0 && len(req["endTime"].(string)) > 0 {
 			startStamp := transTime(req["startTime"].(string))
 			endStamp := transTime(req["endTime"].(string))
-
-			interval := infoContain[1].Stamps - infoContain[0].Stamps
-			startPos := (startStamp - infoContain[0].Stamps) / interval
-			endPos := (endStamp - infoContain[0].Stamps) / interval
-			if startPos < 0 {
-				startPos = 0
-			}
-			if endPos > int64(len(infoContain)) {
-				endPos = int64(len(infoContain))
-			}
-			if int(startPos) > len(infoContain)-1 {
-				startPos = int64(len(infoContain)) - 1
-			}
-
-			if int(endPos) > len(infoContain)-1 {
-				endPos = int64(len(infoContain)) - 1
-			}
-
-			for index := startPos; index > 0; index-- {
-				startPos = index
-				if infoContain[index].Stamps < startStamp {
-					startStamp = index
-					break
-				}
-			}
-			for index := endPos; index < int64(len(infoContain)); index++ {
-				endPos = index
-				if infoContain[index].Stamps > endStamp {
-					endPos = index
-					break
+			for _, info := range infoContain {
+				if startStamp < info.Stamps && info.Stamps < endStamp {
+					datas = append(datas, info)
 				}
 			}
 			log.Println("start end time ", req["startTime"].(string), startStamp, req["endTime"].(string), endStamp)
-			for _, info := range infoContain[startPos:endPos] {
-				if startStamp < info.Stamps && info.Stamps < endStamp {
-					datas = append(datas, info.sshData)
-				}
-			}
 		} else {
 			var start_pos int
 			lens := len(infoContain)
@@ -255,40 +225,12 @@ func http_server_run(httpserver string) {
 		if err == nil && req["startTime"] != nil && req["endTime"] != nil && len(req["startTime"].(string)) > 0 && len(req["endTime"].(string)) > 0 {
 			startStamp := transTime(req["startTime"].(string))
 			endStamp := transTime(req["endTime"].(string))
-
-			interval := processContain[1].Stamps - processContain[0].Stamps
-			startPos := (startStamp - processContain[0].Stamps) / interval
-			endPos := (endStamp - processContain[0].Stamps) / interval
-			if startPos < 0 {
-				startPos = 0
-			}
-			if endPos > int64(len(processContain)) {
-				endPos = int64(len(processContain))
-			}
-			if int(startPos) > len(processContain)-1 {
-				startPos = int64(len(processContain)) - 1
-			}
-
-			if int(endPos) > len(processContain)-1 {
-				endPos = int64(len(processContain)) - 1
-			}
-
-			for index := startPos; index > 0; index-- {
-				startPos = index
-				if processContain[index].Stamps < startStamp {
-					startStamp = index
-					break
-				}
-			}
-			for index := endPos; index < int64(len(processContain)); index++ {
-				endPos = index
-				if processContain[index].Stamps > endStamp {
-					endPos = index
-					break
+			for _, info := range processContain {
+				if startStamp < info.Stamps && info.Stamps < endStamp {
+					datas = append(datas, info)
 				}
 			}
 			log.Println("start end time ", req["startTime"].(string), startStamp, req["endTime"].(string), endStamp)
-			datas = processContain[startPos:endPos]
 		} else {
 			var start_pos int
 			lens := len(processContain)
@@ -402,7 +344,7 @@ func praseStdout(fd io.Reader) {
 			if ok {
 				infoContain = append(infoContain, infoTmp)
 				for index, tmpSlice := range infoContain {
-					if tmpSlice.Stamps < (time.Now().Unix() - 3600*12) {
+					if tmpSlice.Stamps < (time.Now().Unix() - savedRange) {
 						infoContain = infoContain[index:]
 					} else {
 						break
